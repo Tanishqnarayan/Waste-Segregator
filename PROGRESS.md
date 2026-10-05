@@ -16,7 +16,7 @@
 | 7 | Save `models/waste_classifier.keras` + `class_names.json` | ✅ done | Both in `models/` (came back from Colab; verified sizes) |
 | 8 | Streamlit `app.py` | ✅ done | Compiles; 1 test image/class all correct (metal 99%, organic 98%, paper 100%, plastic 81%); headless server boot → health 200, no errors |
 | 9 | Testing + debugging (headless AppTest: T1-T4) | ✅ done | T1 4/4 correct labels; T2 corrupt→friendly error; T3 missing model→clear error, restored; T4 noise→graceful forced guess, no crash. No code changes needed |
-| 10 | README + college report | ✅ done | `README.md` (docs branch: full details + 6 output figures embedded) + `docs/project_report.md` (Figs 1–3); numbers cross-checked vs artifacts |
+| 10 | README + college report | ✅ done | `README.md` (on main: full details + 6 output figures) + `docs/project_report.md` (Figs 1–3); numbers cross-checked vs artifacts |
 | — | User fixes OneDrive sync for project folder | ⏳ user | **remind at the very end** |
 
 ## Results so far (measured, never invented)
