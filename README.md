@@ -38,13 +38,31 @@ contamination and landfill load.
   free to use with attribution (see References). Our copy holds 9,591 files.
 - Split: stratified **70/15/15** (train 1,670 / val 356 / test 362), seed 42.
   Exact-duplicate files removed by MD5; audit found 0 files shared across
-  classes and 0 files in more than one split. Manifest: `data/splits/`.
+  classes and 0 files in more than one split. Manifest: `data/splits/`
+  (manifest.csv + split_info.json).
 
-## Technologies
+![Raw TrashNet distribution](outputs/figures/class_distribution.png)
+*Raw TrashNet `dataset-resized`: 6 classes, 2,527 images (`explore_dataset.py`).*
 
-Python 3.12 · TensorFlow 2.20 + Keras 3 (MobileNetV2, ImageNet weights) ·
-NumPy · Pillow · Matplotlib · scikit-learn · Streamlit · Google Colab (T4 GPU
-for training; laptop has no NVIDIA GPU so local runs are CPU-only).
+![Sample per category](outputs/figures/sample_images.png)
+*One sample photo from each TrashNet category — clean, single-object,
+white-background style.*
+
+![Prepared 4-class distribution](outputs/figures/prepared_distribution.png)
+*Prepared dataset: per-class train/val/test counts, 2,388 images total
+(`plot_prepared_distribution.py`, disk scan cross-checked vs the manifest).*
+
+## Environment
+
+| Component | Version | Note |
+|---|---|---|
+| Python (venv) | 3.12.10 | matches Colab runtime |
+| TensorFlow | 2.20.0 | CPU-only locally (no NVIDIA GPU on laptop) |
+| Keras | 3.15.1 | `.keras` model format |
+| NumPy / Pillow / Pandas | 2.5.3 / 12.3.0 / 3.0.6 | |
+| Matplotlib / scikit-learn | 3.11.2 / 1.9.1 | figures + metrics + stratified split |
+| Streamlit | 1.64.0 | web app |
+| Google Colab | T4 GPU | real training runs here (~10–25 min) |
 
 ## Installation (Windows, VS Code)
 
@@ -54,7 +72,63 @@ py -3.12 -m venv .venv
 .venv\Scripts\python -m pip install -r requirements.txt
 ```
 
-## How to train the model
+## Workflow (10 phases)
+
+| # | Phase | Script | Output |
+|---|---|---|---|
+| 1 | Inspection + setup | — | `.venv/`, `requirements.txt`, `data/dataset-resized/` (2,527 imgs) |
+| 2 | Exploration | `src/explore_dataset.py` | counts, `class_distribution.png`, `sample_images.png` |
+| 3 | 4-class split | `src/data_preparation.py` | `data/processed/` (1,670/356/362), manifest, `class_names.json` |
+| 4 | Preprocessing | `src/preprocessing.py` | verified [-1,1] batches, `augmentation_preview.png` |
+| 5 | Training | `src/train.py` + Colab notebook | `waste_classifier.keras`, histories |
+| 6 | Evaluation | `src/evaluate.py` | `evaluation.json`, curves, confusion matrix |
+| 7 | Save model | — | `models/` artefacts |
+| 8 | Web app | `app.py` | Streamlit demo |
+| 9 | Testing | AppTest suite | 4/4 labels, error paths, OOD behaviour |
+| 10 | Docs | README + `docs/project_report.md` | this file + full report |
+
+## Preparing the data
+
+```powershell
+.venv\Scripts\python src\data_preparation.py --organic-src data\organic-raw
+```
+
+Flags: `--organic-limit` (default 500, for balance), `--seed` (default 42),
+`--train/--val/--test` ratios (default 0.70/0.15/0.15). Copies only — originals
+are never moved or modified. Deterministic: same seed → byte-identical manifest.
+
+## Preprocessing and augmentation
+
+Every image, train and inference alike: RGB → resize 224×224 → official
+`mobilenet_v2.preprocess_input` ([0,255] → [−1,1], the scale ImageNet weights
+expect). Training images additionally get random horizontal flips, small
+rotations, and ±20% zoom — **train only**, so validation/test scores stay
+honest. The pipeline lives in `src/preprocessing.py` and the app imports the
+same function, so the two can never drift apart.
+
+![Augmentation preview](outputs/figures/augmentation_preview.png)
+*Same training photo under random flip/rotation/zoom — the model learns the
+object, not the exact pixels.*
+
+Verify it any time:
+
+```powershell
+.venv\Scripts\python src\preprocessing.py
+```
+
+## Training the model
+
+Architecture: MobileNetV2 (ImageNet, `include_top=False`, frozen) +
+GlobalAveragePooling2D + Dropout(0.3) + Dense(4, softmax). Adam optimizer,
+sparse categorical cross-entropy, sklearn class weights
+(metal 1.455 … paper 0.599) to counter the ~2× paper majority.
+
+| Stage | Base | LR | Epochs | Trainable |
+|---|---|---:|---:|---|
+| A — feature extraction | frozen | 1e-3 | ≤25 | 5,124 params (head only) |
+| B — fine-tuning | last 30/154 layers unfrozen | 1e-5 | ≤20 | head + base tail |
+
+EarlyStopping (restore best) + ModelCheckpoint + ReduceLROnPlateau throughout.
 
 Fast smoke test (CPU, ~5 min, proves the code runs — not real training):
 
@@ -62,53 +136,69 @@ Fast smoke test (CPU, ~5 min, proves the code runs — not real training):
 .venv\Scripts\python src\train.py --smoke
 ```
 
-Real training (Colab GPU, ~10–25 min):
+Real training in Colab (`notebooks/waste_classification.ipynb`, T4 GPU):
 
-```powershell
-Compress-Archive -Path data\processed -DestinationPath processed_colab.zip -Force
-```
+1. `Compress-Archive -Path data\processed -DestinationPath processed_colab.zip -Force`
+2. Upload `processed_colab.zip`, `train.py`, `preprocessing.py`, `class_names.json`.
+3. Verify counts → train (`--epochs-a 25 --epochs-b 20`) → verify 4 output files.
+4. Download one `waste_outputs.zip`; back up to Drive (Colab disks wipe on reconnect).
+5. Place `.keras` files → `models/`, history JSONs → `outputs/`.
 
-Upload `processed_colab.zip`, `src/train.py`, `src/preprocessing.py`,
-`models/class_names.json` into `notebooks/waste_classification.ipynb` on
-Colab (T4 GPU), run all cells, download `waste_classifier.keras`,
-`stage_a_best.keras`, and both history JSONs back into `models/` and `outputs/`.
-Two stages: **A** — frozen base, Adam 1e-3, 25 epochs; **B** — last 30 base
-layers unfrozen, Adam 1e-5, 20 epochs. EarlyStopping (restore best) +
-ModelCheckpoint + ReduceLROnPlateau throughout; class weights compensate the
-~2× paper majority.
-
-## How to evaluate
+## Evaluating
 
 ```powershell
 .venv\Scripts\python src\evaluate.py
 ```
 
-Scores both models on the sealed test set; writes `outputs/evaluation.json`,
+Scores `stage_a_best.keras` and `waste_classifier.keras` on the sealed test
+set. Writes `outputs/evaluation.json` (accuracy, macro-F1, per-class
+precision/recall/F1, confusion matrix for both models),
 `outputs/figures/training_curves.png`, `outputs/figures/confusion_matrix.png`.
 
-## How to run the app
+## Running the app
 
 ```powershell
 .venv\Scripts\streamlit run app.py
 ```
 
 Upload JPG/JPEG/PNG → preview → **Predict** → category, confidence, and
-per-class bars. A sub-60% score raises a caution flag (it is *not* a reliable
-non-waste detector — the model always picks one of its 4 classes).
+per-class bars. The model loads once (`st.cache_resource`). A sub-60% score
+raises a caution flag — it is *not* a reliable non-waste detector, because a
+4-class model always picks one of its classes. Missing model/map files produce
+a clear recovery message instead of a traceback.
 
 ## Results (actual, test set n = 362)
 
-| Class | Precision | Recall | F1 |
-|---|---:|---:|---:|
-| metal | 0.89 | 0.90 | 0.90 |
-| organic | 0.99 | 0.99 | 0.99 |
-| paper | 0.95 | 0.93 | 0.94 |
-| plastic | 0.86 | 0.89 | 0.87 |
+| Class | Precision | Recall | F1 | Support |
+|---|---:|---:|---:|---:|
+| metal | 0.889 | 0.903 | 0.896 | 62 |
+| organic | 0.987 | 0.987 | 0.987 | 76 |
+| paper | 0.952 | 0.927 | 0.940 | 151 |
+| plastic | 0.855 | 0.890 | 0.873 | 73 |
 
-Accuracy **0.928**, macro-F1 **0.924**. Main confusions are material-adjacent:
-metal↔plastic (shiny cans vs bottles), paper↔plastic (wrappers/films).
-Validation accuracy was 0.961 — the ~3pp val/test gap is expected selection
-bias (checkpoints are chosen on val); **0.928 is the unbiased figure**.
+Accuracy **0.9282**, macro-F1 **0.9237** (Stage A alone: 0.9227 / 0.9180).
+
+![Training curves](outputs/figures/training_curves.png)
+*Train vs validation accuracy/loss across Stage A then B (dashed line):
+fast convergence, no divergence; the Stage-B train dip-and-recover is the
+normal fine-tune signature; early stopping halted before val degraded.*
+
+![Confusion matrix](outputs/figures/confusion_matrix.png)
+*Final model, sealed test set (rows = true, columns = predicted). Errors are
+material-adjacent: metal↔plastic (shiny cans vs bottles), paper↔plastic
+(wrappers/films); organic is 75/76.*
+
+Validation accuracy read 0.961 — the ~3pp val/test gap is expected selection
+bias (checkpoints are chosen on val); **0.928 is the unbiased figure** to quote.
+
+## Testing performed
+
+- Pipeline: deterministic manifests (identical hash across runs), 0 files
+  leaking across splits, 0 cross-class byte-duplicates.
+- Training smoke test on CPU: both stages, both `.keras` files, histories.
+- App (headless AppTest): 4/4 correct labels (metal 99%, organic 98%, paper
+  100%, plastic 81%), corrupt file → friendly error, missing model → clear
+  recovery message, noise image → graceful forced guess, no crashes.
 
 ## Reproduce the pipeline
 
@@ -134,9 +224,9 @@ bias (checkpoints are chosen on val); **0.928 is the unbiased figure**.
 
 ```
 waste-segregation/
-  app.py  requirements.txt  PROGRESS.md  README.md
-  src/         explore_dataset.py  data_preparation.py
-               preprocessing.py  train.py  evaluate.py
+  app.py  requirements.txt  PROGRESS.md
+  src/         explore_dataset.py  data_preparation.py  preprocessing.py
+               plot_prepared_distribution.py  train.py  evaluate.py
   notebooks/  waste_classification.ipynb   (Colab GPU training)
   models/      waste_classifier.keras  stage_a_best.keras  class_names.json
   data/        dataset-resized/  organic-raw/  processed/  splits/
